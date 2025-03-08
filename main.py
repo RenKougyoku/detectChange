@@ -7,6 +7,7 @@ from tkinter import ttk
 from PIL import Image, ImageTk
 import threading
 from tkinter import messagebox
+from plyer import notification
 
 class RegionSelector:
     def __init__(self, parent):
@@ -164,6 +165,7 @@ class ScreenChangeDetectorUI:
         self.running = False
         self._region = shared_region  # Use the shared region object
         self.threshold = 30
+        self.notify_enabled = True  # Add notification control
         
         # Create StringVars with traces
         self.x_var = tk.StringVar()
@@ -208,9 +210,17 @@ class ScreenChangeDetectorUI:
         self.select_region_button = ttk.Button(self.control_frame, text="Select Region", command=self.select_region)
         self.select_region_button.grid(row=0, column=1, padx=5)
         
+        # Add notification toggle button after the Select Region button
+        self.notify_button = ttk.Button(
+            self.control_frame, 
+            text="Notifications: ON", 
+            command=self.toggle_notifications
+        )
+        self.notify_button.grid(row=0, column=2, padx=5)
+        
         # Region settings with proper binding
         self.region_frame = ttk.LabelFrame(self.control_frame, text="Region Settings", padding="5")
-        self.region_frame.grid(row=0, column=2, padx=10)
+        self.region_frame.grid(row=0, column=3, padx=10)
         
         # Create and store Entry widgets as instance variables with trace
         ttk.Label(self.region_frame, text="X:").grid(row=0, column=0)
@@ -444,15 +454,51 @@ class ScreenChangeDetectorUI:
             self.start_button.config(text="Start")
             self.status_label.config(text="Status: Stopped")
 
+    def toggle_notifications(self):
+        """Toggle notifications on/off"""
+        self.notify_enabled = not self.notify_enabled
+        button_text = "Notifications: ON" if self.notify_enabled else "Notifications: OFF"
+        self.notify_button.config(text=button_text)
+        print(f"[ScreenChangeDetectorUI] Notifications {'enabled' if self.notify_enabled else 'disabled'}")
+
+    def send_notification(self, title, message):
+        """Send a system notification"""
+        try:
+            notification.notify(
+                title=title,
+                message=message,
+                app_icon=None,  # e.g. 'C:\\icon_32x32.ico'
+                timeout=5,  # seconds
+            )
+            print(f"[ScreenChangeDetectorUI] Notification sent: {title} - {message}")
+        except Exception as e:
+            print(f"[ScreenChangeDetectorUI] Error sending notification: {e}")
+
     def monitoring_loop(self):
         initial_image = self.capture_window()
+        last_notification_time = 0  # To prevent notification spam
+        notification_cooldown = 3  # Minimum seconds between notifications
+        
         while self.running:
             current_image = self.capture_window()
+            current_time = time.time()
+            
             if self.detect_changes(initial_image, current_image):
                 self.changes_detected += 1
                 self.root.after(0, lambda: self.changes_label.config(
                     text=f"Changes detected: {self.changes_detected}"
                 ))
+                
+                # Send notification if enabled and not in cooldown
+                if (self.notify_enabled and 
+                    current_time - last_notification_time >= notification_cooldown):
+                    message = (f"Change detected in region at ({self._region.x}, {self._region.y})\n"
+                             f"Total changes: {self.changes_detected}")
+                    self.send_notification(
+                        "Screen Change Detected",
+                        message
+                    )
+                    last_notification_time = current_time
             
             self.root.after(0, lambda img=current_image: self.update_image_display(img))
             initial_image = current_image
