@@ -6,19 +6,35 @@ import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
 import threading
+import sys
 from tkinter import messagebox
 from plyer import notification
+from screeninfo import get_monitors
 
 class RegionSelector:
     def __init__(self, parent):
+        # Import screeninfo to get detailed monitor information
+        from screeninfo import get_monitors
+        self.monitors = get_monitors()
+        
+        # Calculate the total bounds of all monitors
+        self.min_x = min(m.x for m in self.monitors)
+        self.min_y = min(m.y for m in self.monitors)
+        self.max_x = max(m.x + m.width for m in self.monitors)
+        self.max_y = max(m.y + m.height for m in self.monitors)
+        
+        # Calculate virtual screen size
+        self.virtual_screen_width = self.max_x - self.min_x
+        self.virtual_screen_height = self.max_y - self.min_y
+        
+        # Create window to cover all monitors
         self.root = tk.Toplevel(parent)
         self.root.attributes('-alpha', 0.3)  # Make window semi-transparent
-        self.root.attributes('-fullscreen', True)
         self.root.attributes('-topmost', True)
         
-        # Get screen dimensions
-        self.screen_width = self.root.winfo_screenwidth()
-        self.screen_height = self.root.winfo_screenheight()
+        # Set window geometry to cover all monitors including their relative positions
+        self.root.geometry(f"{self.virtual_screen_width}x{self.virtual_screen_height}+{self.min_x}+{self.min_y}")
+        self.root.overrideredirect(True)  # Remove window decorations
         
         # Variables to store rectangle coordinates
         self.start_x = None
@@ -37,18 +53,19 @@ class RegionSelector:
         
         # Bind Escape key to cancel
         self.root.bind("<Escape>", lambda e: self.root.destroy())
-        
-        # Add instruction text
+          # Add instruction text (centered horizontally)
         self.canvas.create_text(
-            self.screen_width // 2,
+            self.virtual_screen_width // 2,
             50,
-            text="Click and drag to select region. Press ESC to cancel.",
+            text="Click and drag to select region across any monitor. Press ESC to cancel.",
             fill="black",
             font=("Arial", 24, "bold")
         )
-        print("[RegionSelector] Window created")
-        
-
+        print(f"[RegionSelector] Window created covering {self.virtual_screen_width}x{self.virtual_screen_height} pixels")
+          # Debug information about monitors
+        for i, m in enumerate(self.monitors):
+            print(f"[RegionSelector] Monitor {i}: {m.x},{m.y} {m.width}x{m.height}")
+    
     def on_press(self, event):
         # Get absolute screen coordinates
         self.start_x = event.x_root
@@ -63,11 +80,11 @@ class RegionSelector:
         current_x = event.x_root
         current_y = event.y_root
         
-        # Convert to canvas coordinates
-        canvas_x1 = self.start_x - self.root.winfo_x()
-        canvas_y1 = self.start_y - self.root.winfo_y()
-        canvas_x2 = current_x - self.root.winfo_x()
-        canvas_y2 = current_y - self.root.winfo_y()
+        # Convert to canvas coordinates, adjusted for the window position
+        canvas_x1 = self.start_x - self.root.winfo_x() - self.min_x
+        canvas_y1 = self.start_y - self.root.winfo_y() - self.min_y
+        canvas_x2 = current_x - self.root.winfo_x() - self.min_x
+        canvas_y2 = current_y - self.root.winfo_y() - self.min_y
         
         self.current_rect = self.canvas.create_rectangle(
             canvas_x1, canvas_y1, canvas_x2, canvas_y2,
@@ -372,14 +389,24 @@ class ScreenChangeDetectorUI:
                 # Update the region object directly
                 print(f"[ScreenChangeDetectorUI] Before update - Region: {self._region}")
                 self._region.update_from_coordinates(new_region)
-                print(f"[ScreenChangeDetectorUI] After update - Region: {self._region}")
-                
-                # Explicitly update each StringVar
+                print(f"[ScreenChangeDetectorUI] After update - Region: {self._region}")                # Explicitly update each StringVar without triggering immediate updates
                 print("[ScreenChangeDetectorUI] Updating UI StringVars...")
+                # Temporarily remove traces to avoid triggering _on_entry_change
+                self.x_var.trace_remove("write", self.x_var.trace_info()[0][1])
+                self.y_var.trace_remove("write", self.y_var.trace_info()[0][1])
+                self.width_var.trace_remove("write", self.width_var.trace_info()[0][1])
+                self.height_var.trace_remove("write", self.height_var.trace_info()[0][1])
+                
+                # Update values
                 self.x_var.set(str(self._region.x))
                 self.y_var.set(str(self._region.y))
                 self.width_var.set(str(self._region.width))
                 self.height_var.set(str(self._region.height))
+                  # Re-add traces
+                self.x_var.trace_add("write", self._on_entry_change)
+                self.y_var.trace_add("write", self._on_entry_change)
+                self.width_var.trace_add("write", self._on_entry_change)
+                self.height_var.trace_add("write", self._on_entry_change)
                 
                 # Force update and print current values
                 self.root.update_idletasks()
@@ -402,14 +429,33 @@ class ScreenChangeDetectorUI:
                 self.status_label.config(text=f"Error: {str(e)}")
         else:
             print("[ScreenChangeDetectorUI] Region selection cancelled")
-
+            
     def capture_window(self):
         try:
-            screenshot = pyautogui.screenshot(region=self.region)
-            print(f"[ScreenChangeDetectorUI] Capturing window with region: {self._region}")
-            return cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
+            # Get detailed region info
+            x, y, width, height = self.region
+            print(f"[ScreenChangeDetectorUI] Capturing screenshot with coordinates: x={x}, y={y}, width={width}, height={height}")
+            
+            # Use MSS for more reliable multi-monitor screenshots
+            from mss import mss
+            print(f"[ScreenChangeDetectorUI] Taking MSS screenshot of region")
+            with mss() as sct:
+                # Define capture region
+                monitor = {"top": y, "left": x, "width": width, "height": height}
+                
+                # Capture the screen and convert to PIL/Pillow Image
+                screenshot = sct.grab(monitor)
+                
+                # Log the screenshot size for debugging
+                print(f"[ScreenChangeDetectorUI] Screenshot captured: {screenshot.width}x{screenshot.height}")
+                
+                # Convert to OpenCV format (BGR)
+                img = np.array(screenshot)
+                return cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)  # MSS uses BGRA
         except Exception as e:
+            import traceback
             print(f"[ScreenChangeDetectorUI] Screenshot error: {e}")
+            traceback.print_exc()
             self.status_label.config(text=f"Error: {e}")
             return None
 
